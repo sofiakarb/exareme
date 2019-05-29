@@ -16,7 +16,9 @@ import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
 import java.rmi.RemoteException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static madgik.exareme.master.engine.iterations.handler.IterationsConstants.iterationsParameterIterDBKey;
 import static madgik.exareme.master.engine.iterations.handler.IterationsConstants.terminationConditionTemplateSQLFilename;
@@ -36,6 +38,48 @@ public class Composer {
             IterativeAlgorithmState.IterativeAlgorithmPhasesModel iterativeAlgorithmPhase,
             int iteration) {
         return ComposerConstants.getAlgorithmFolderPath(algorithmName) + "/" + iterativeAlgorithmPhase.name() + "/" + iteration;
+    }
+
+    /**
+     * Creates the query that will run against the local dataset file to fetch the metadata
+     *
+     * @return a query for the local database
+     */
+    private static String createMetadataQuery(AlgorithmProperties algorithmProperties) throws ComposerException {
+        List<String> variables = new ArrayList<>();
+        for (ParameterProperties parameter : algorithmProperties.getParameters()) {
+            if (parameter.getValue().equals(""))
+                continue;
+
+            if (parameter.getType() == ParameterProperties.ParameterType.column) {
+                for (String variable : Arrays.asList(parameter.getValue().split("[,]"))) {
+                    if (variables.contains(variable)) {
+                        throw new ComposerException("Column '" + variable + "' was given twice as input. This is not allowed.");
+                    }
+                    variables.add(variable);
+                }
+            } else if (parameter.getType() == ParameterProperties.ParameterType.formula) {      // TODO Add a proper formula parser
+                for (String variable : Arrays.asList(parameter.getValue().split("[+\\-*:]+"))) {
+                    if (!variable.equals("0"))
+                        variables.add(variable);
+                }
+            }
+        }
+
+        StringBuilder result = new StringBuilder();
+        result.append("select * from metadata");
+
+        if (variables.isEmpty()){
+            result.append(";");
+        }else {
+            result.append(" where code in (");
+            for (String variable : variables) {
+                result.append(",\"" + variable + "\"");
+            }
+            result.append(");");
+        }
+
+        return result.toString();
     }
 
     /**
@@ -59,9 +103,9 @@ public class Composer {
                     }
                     variables.add(variable);
                 }
-            } else if (parameter.getType() == ParameterProperties.ParameterType.formula) {
+            } else if (parameter.getType() == ParameterProperties.ParameterType.formula) {      // TODO Add a proper formula parser
                 for (String variable : Arrays.asList(parameter.getValue().split("[+\\-*:]+"))) {
-                    if(!variable.equals("0"))
+                    if (!variable.equals("0"))
                         variables.add(variable);
                 }
             } else if (parameter.getType() == ParameterProperties.ParameterType.filter) {
@@ -166,40 +210,42 @@ public class Composer {
         String defaultDBFilePath = HBPConstants.DEMO_DB_WORKING_DIRECTORY + dbIdentifier + "_defaultDB.db";
         String inputLocalDB = ComposerConstants.getDatasetDBDirectory();
         String dbQuery = createLocalTableQuery(algorithmProperties);
+        String metadataQuery = createMetadataQuery(algorithmProperties);
         // Escaping double quotes for python algorithms because they are needed elsewhere
         String pythonDBQuery = dbQuery.replace("\"", "\\\"");
+        String pythonMetadataQuery = metadataQuery.replace("\"", "\\\"");
         String outputGlobalTbl = "output_" + algorithmKey;
 
         // Create the dflScript depending on algorithm type
         String dflScript;
         switch (algorithmProperties.getType()) {
             case local:
-                dflScript = composeLocalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, outputGlobalTbl,
-                        defaultDBFilePath, algorithmProperties.getParameters());
+                dflScript = composeLocalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, metadataQuery,
+                        outputGlobalTbl, defaultDBFilePath, algorithmProperties.getParameters());
                 break;
             case local_global:
-                dflScript = composeLocalGlobalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, outputGlobalTbl,
-                        defaultDBFilePath, algorithmProperties.getParameters());
+                dflScript = composeLocalGlobalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, metadataQuery,
+                        outputGlobalTbl, defaultDBFilePath, algorithmProperties.getParameters());
                 break;
             case multiple_local_global:
-                dflScript = composeMultipleLocalGlobalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, outputGlobalTbl,
-                        defaultDBFilePath, algorithmProperties.getParameters());
+                dflScript = composeMultipleLocalGlobalAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, metadataQuery,
+                        outputGlobalTbl, defaultDBFilePath, algorithmProperties.getParameters());
                 break;
             case pipeline:
-                dflScript = composePipelineAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, outputGlobalTbl,
-                        defaultDBFilePath, algorithmProperties.getParameters(), numberOfWorkers);
+                dflScript = composePipelineAlgorithmsDFLScript(algorithmName, inputLocalDB, dbQuery, metadataQuery,
+                        outputGlobalTbl, defaultDBFilePath, algorithmProperties.getParameters(), numberOfWorkers);
                 break;
             case python_local:
                 dflScript = composePythonLocalAlgorithmsDFLScript(algorithmName, inputLocalDB, pythonDBQuery,
-                        outputGlobalTbl, algorithmProperties.getParameters());
+                        pythonMetadataQuery, outputGlobalTbl, algorithmProperties.getParameters());
                 break;
             case python_local_global:
                 dflScript = composePythonLocalGlobalAlgorithmsDFLScript(algorithmName, algorithmKey, inputLocalDB,
-                        pythonDBQuery, outputGlobalTbl, algorithmProperties.getParameters());
+                        pythonDBQuery, pythonMetadataQuery, outputGlobalTbl, algorithmProperties.getParameters());
                 break;
             case python_multiple_local_global:
-                dflScript = composePythonMultipleLocalGlobalAlgorithmsDFLScript(algorithmName, algorithmKey,
-                        inputLocalDB, pythonDBQuery, outputGlobalTbl, algorithmProperties.getParameters());
+                dflScript = composePythonMultipleLocalGlobalAlgorithmsDFLScript(algorithmName, algorithmKey, inputLocalDB,
+                        pythonDBQuery, pythonMetadataQuery, outputGlobalTbl, algorithmProperties.getParameters());
                 break;
             case iterative:
                 throw new ComposerException("Iterative Algorithms should not call composeDFLScripts");
@@ -216,6 +262,7 @@ public class Composer {
      * @param algorithmName       the name of the algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the table where the output is going to be printed
      * @param defaultDBFileName   the name of the local db that the SQL scripts are going to use
      * @param algorithmParameters the parameters of the algorithm provided
@@ -225,6 +272,7 @@ public class Composer {
             String algorithmName,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             String defaultDBFileName,
             ParameterProperties[] algorithmParameters
@@ -241,6 +289,7 @@ public class Composer {
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
         dflScript.append(String.format("\n  select filetext('%s')\n", localScriptPath));
         dflScript.append(");\n");
 
@@ -253,6 +302,7 @@ public class Composer {
      * @param algorithmName       the name of the algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the table where the output is going to be printed
      * @param defaultDBFileName   the name of the local db that the SQL scripts are going to use
      * @param algorithmParameters the parameters of the algorithm provided
@@ -262,6 +312,7 @@ public class Composer {
             String algorithmName,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             String defaultDBFileName,
             ParameterProperties[] algorithmParameters
@@ -281,6 +332,7 @@ public class Composer {
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
 
         dflScript.append(String.format("\n  select filetext('%s')\n", localScriptPath));
         dflScript.append(");\n");
@@ -315,6 +367,7 @@ public class Composer {
      * @param algorithmName       the name of the algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the table where the output is going to be printed
      * @param defaultDBFileName   the name of the local db that the SQL scripts are going to use
      * @param algorithmParameters the parameters of the algorithm provided
@@ -324,6 +377,7 @@ public class Composer {
             String algorithmName,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             String defaultDBFileName,
             ParameterProperties[] algorithmParameters
@@ -362,6 +416,7 @@ public class Composer {
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+            dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
             if (iteration > 1)
                 dflScript.append(String.format("'%s:%s' ", ComposerConstants.prevOutputGlobalTblKey, prevOutputGlobalTbl));
             dflScript.append(String.format("\n  select filetext('%s')\n", localScriptPath));
@@ -400,6 +455,7 @@ public class Composer {
      * @param algorithmName       the name of the algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the table where the output is going to be printed
      * @param defaultDBFileName   the name of the local db that the SQL scripts are going to use
      * @param algorithmParameters the parameters of the algorithm provided
@@ -410,6 +466,7 @@ public class Composer {
             String algorithmName,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             String defaultDBFileName,
             ParameterProperties[] algorithmParameters,
@@ -433,6 +490,7 @@ public class Composer {
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.outputGlobalTblKey, outputGlobalTbl));
         dflScript.append(String.format("\n  select filetext('%s')\n", localScriptPath));
         dflScript.append(");\n");
@@ -466,6 +524,7 @@ public class Composer {
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.outputGlobalTblKey, outputGlobalTbl));
         dflScript.append(String.format("'%s:%s' ", ComposerConstants.prevOutputLocalTblKey, prevOutputLocalTbl));
         dflScript.append(String.format("\n  select filetext('%s')\n", globalScriptPath));
@@ -494,6 +553,7 @@ public class Composer {
         String defaultDBFileName = HBPConstants.DEMO_DB_WORKING_DIRECTORY + dbIdentifier + "_defaultDB.db";
         String inputLocalDB = ComposerConstants.getDatasetDBDirectory();
         String dbQuery = createLocalTableQuery(algorithmProperties);
+        String metadataDBQuery = createMetadataQuery(algorithmProperties);
         ParameterProperties[] algorithmParameters = algorithmProperties.getParameters();
 
         StringBuilder dflScript = new StringBuilder();
@@ -518,6 +578,7 @@ public class Composer {
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+            dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
             dflScript.append(String.format("'%s:%s' ", iterationsParameterIterDBKey, iterationsDBName));
             dflScript.append(String.format("\n  select filetext('%s')\n",
                     algorithmFolderPath + "/" + terminationConditionTemplateSQLFilename));
@@ -566,6 +627,7 @@ public class Composer {
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.defaultDBKey, defaultDBFileName));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.inputLocalDBKey, inputLocalDB));
             dflScript.append(String.format("'%s:%s' ", ComposerConstants.dbQueryKey, dbQuery));
+            dflScript.append(String.format("'%s:%s' ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
             if (iteration > 1)
                 dflScript.append(String.format("'%s:%s' ", ComposerConstants.prevOutputGlobalTblKey, prevOutputGlobalTbl));
             dflScript.append(String.format("\n  select filetext('%s')\n", localScriptPath));
@@ -607,6 +669,7 @@ public class Composer {
      * @param algorithmName       the name of the algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the name of the output table
      * @param algorithmParameters the parameters of the algorithm
      * @return
@@ -615,6 +678,7 @@ public class Composer {
             String algorithmName,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             ParameterProperties[] algorithmParameters
     ) {
@@ -629,6 +693,7 @@ public class Composer {
         }
         dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
         dflScript.append("'\n);\n");
 
         return dflScript.toString();
@@ -641,6 +706,7 @@ public class Composer {
      * @param algorithmKey        the key of the specific algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the name of the output table
      * @param algorithmParameters the parameters of the algorithm
      * @return
@@ -650,6 +716,7 @@ public class Composer {
             String algorithmKey,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             ParameterProperties[] algorithmParameters
     ) {
@@ -666,6 +733,7 @@ public class Composer {
         }
         dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.inputLocalDBKey, inputLocalDB));
         dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.dbQueryKey, dbQuery));
+        dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
         dflScript.append("'\n);\n");
 
         // Format union
@@ -694,6 +762,7 @@ public class Composer {
      * @param algorithmKey        the key of the specific algorithm
      * @param inputLocalDB        the location of the local database
      * @param dbQuery             the query to execute on the database
+     * @param metadataDBQuery     the query to execute on the database and get the metadata
      * @param outputGlobalTbl     the name of the output table
      * @param algorithmParameters the parameters of the algorithm
      * @return
@@ -703,6 +772,7 @@ public class Composer {
             String algorithmKey,
             String inputLocalDB,
             String dbQuery,
+            String metadataDBQuery,
             String outputGlobalTbl,
             ParameterProperties[] algorithmParameters
     ) {
@@ -750,6 +820,7 @@ public class Composer {
             }
             dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.inputLocalDBKey, inputLocalDB));
             dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.dbQueryKey, dbQuery));
+            dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.metadataDBQueryKey, metadataDBQuery));
             dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.curStatePKLKey, localStatePKLFile));
             if (iteration > 1) {
                 dflScript.append(String.format("-%s \"%s\" ", ComposerConstants.prevStatePKLKey, prevLocalStatePKLFile));
