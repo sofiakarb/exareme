@@ -184,8 +184,6 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
     while true
     do
         name=$(cat etc/exareme/name)
-        echo ${name}
-        echo $(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
 
         if [[ "${name}" ==  $(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw) ]]; then
             echo ""
