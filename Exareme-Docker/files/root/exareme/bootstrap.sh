@@ -128,6 +128,8 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
 
     #Get Master's IP/Name from Consul[key-value store]
     MASTER_IP=$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/?keys | jq -r '.[]' | sed "s/${EXAREME_MASTER_PATH}\///g")?raw)
+    vi etc/exareme/name
+    echo ${MASTER_IP} > etc/exareme/name
     MASTER_NAME=$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/?keys | jq -r '.[]' | sed "s/${EXAREME_MASTER_PATH}\///g")
 
     #CSVs to DB
@@ -173,6 +175,23 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
         echo "Worker node["${MY_IP}","${NODE_NAME}]" seams that is not connected with the Master.Exiting..."
         exit 1
     fi
+    while true
+    do
+        name=$(cat etc/exareme/name)
+        echo ${name}
+        echo $(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
+
+        if [[ "${name}" ==  $(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw) ]]; then
+            echo ""
+        else
+            echo "Manager has been restarted.."
+            ./exareme-admin.sh --kill
+            MASTER_IP=$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
+            MY_IP=$(/sbin/ifconfig | grep "inet " | awk -F: '{print $2}' | grep '10.20' | awk '{print $1;}' | head -n 1)
+            . ./start-worker.sh
+        fi
+        sleep 5
+    done
 
 
 #This is the Master
@@ -202,17 +221,43 @@ else
 
     #Master re-booted
     if [[ "$(curl -s -o  /dev/null -i -w "%{http_code}\n" ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/?keys)" = "200" ]]; then
-        #Workers connected to Master node
-        if [[ "$(curl -s -o  /dev/null -i -w "%{http_code}\n" ${CONSULURL}/v1/kv/${EXAREME_ACTIVE_WORKERS_PATH}/?keys)" = "200" ]]; then
-            #Empty echo for if-then-else consistency
-            echo ""
-            #TODO check what if master restarts with different IP while workers are already connected to the master's registry with previous IP
+
+        ./exareme-admin.sh --start
+        echo "Master node["${MY_IP}","$NODE_NAME"] trying to re-boot..."
+        while [[ ! -f /var/log/exareme.log ]]; do
+            echo "Master node["$MY_IP"," $NODE_NAME"] re-booted..."
+        done
+
+        tail -f /var/log/exareme.log | while read LOGLINE
+        do
+            [[ "${LOGLINE}" == *"Master node started."* ]] && pkill -P $$ tail
+            echo "Initializing Master node["${MY_IP}","${NODE_NAME}"]"
+
+            #Java's exception in StartMaster.java
+            if [[ "${LOGLINE}" == *"java.rmi.RemoteException"* ]]; then
+                exit 1  #Simple exit 1. Exareme is not up yet
+            fi
+        done
+
+        #Health check for Master. LIST_DATASET algorithm execution
+        echo "Health check for Master node["${MY_IP}","${NODE_NAME}"]"
+        check="$(curl -s ${MY_IP}:9092/check/worker?IP_MASTER=${MY_IP}?IP_WORKER=${MY_IP})"     #Master has a Worker instance. So in this case IP_MASTER / IP_WORKER is the same
+
+        #error: Something went wrong could happen (it could be madis)
+        if [[ $( echo ${check} | jq '.error') != null ]]; then
+             echo ${check} | jq '.error'
+             echo "Exiting.."
+             exit 1
+        fi
+
+        getNames="$( echo ${check} | jq '.[][].NodeName')"
+        #Retrive result as json. If $NODE_NAME exists in result, the algorithm run in the specific node
+        if [[ $getNames = *${NODE_NAME}* ]]; then
+            echo -e "\nMaster node["${MY_IP}","${NODE_NAME}"] initialized"
+            curl -s -X PUT -d @- ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/${NODE_NAME} <<< ${MY_IP}
         else
-            ./exareme-admin.sh --start
-            echo "Master node["${MY_IP}","$NODE_NAME"] trying to re-boot..."
-            while [[ ! -f /var/log/exareme.log ]]; do
-                echo "Master node["$MY_IP"," $NODE_NAME"] re-booted..."
-            done
+            echo "Master node["${MY_IP}","${NODE_NAME}]" seams that could not be initialized.Exiting..."
+            exit 1
         fi
 
     #Master node just created
