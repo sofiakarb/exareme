@@ -36,6 +36,12 @@ stop_exareme () {
     fi
 }
 
+set_consul () {
+    curl -s -X PUT -d @- ${CONSULURL}/v1/kv/${EXAREME_ACTIVE_WORKERS_PATH}/${NODE_NAME} <<< ${MY_IP}
+    ./set-local-datasets.sh
+    return 1
+}
+
 #Clean ups in Consul [key-value store]
 deleteKeysFromConsul () {
     if [[ "$(curl -s -o  /dev/null -i -w "%{http_code}\n" ${CONSULURL}/v1/kv/${DATASETS}/${NODE_NAME}?keys)" = "200" ]]; then
@@ -188,7 +194,10 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
             ./exareme-admin.sh --kill
             MASTER_IP=$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
             MY_IP=$(/sbin/ifconfig | grep "inet " | awk -F: '{print $2}' | grep '10.20' | awk '{print $1;}' | head -n 1)
+
             . ./start-worker.sh
+            set_consul
+            echo ${MASTER_IP} > etc/exareme/name
         fi
         sleep 5
     done
