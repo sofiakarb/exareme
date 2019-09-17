@@ -134,8 +134,8 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
 
     #Get Master's IP/Name from Consul[key-value store]
     MASTER_IP=$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/?keys | jq -r '.[]' | sed "s/${EXAREME_MASTER_PATH}\///g")?raw)
-    vi etc/exareme/name
-    echo ${MASTER_IP} > etc/exareme/name
+    vi etc/exareme/ip
+    echo ${MASTER_IP} > etc/exareme/ip
     MASTER_NAME=$(curl -s ${CONSULURL}/v1/kv/${EXAREME_MASTER_PATH}/?keys | jq -r '.[]' | sed "s/${EXAREME_MASTER_PATH}\///g")
 
     #CSVs to DB
@@ -183,19 +183,25 @@ if [[ "${MASTER_FLAG}" != "master" ]]; then
     fi
     while true
     do
-        name=$(cat etc/exareme/name)
-
-        if [[ "${name}" ==  $(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw) ]]; then
-            echo ""
-        else
+        IP=$(cat etc/exareme/ip)
+        while [[ "$(curl -s ${CONSULURL}/v1/health/state/passing | jq -r '.[].Status')" != "passing" ]]; do
+            echo "Waiting for Consul to be initialized"
+            sleep 10
+        done
+        MASTER_key_value_IP=$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
+        echo ${MASTER_key_value_IP}
+        if [[ "${IP}" ==  "${MASTER_key_value_IP}" ]]; then
+            :
+        elif [[ "${IP}" !=  "${MASTER_key_value_IP}" && ${MASTER_key_value_IP} != "" ]]; then
+            echo ${MASTER_key_value_IP}
             echo "Manager has been restarted.."
             ./exareme-admin.sh --kill
-            MASTER_IP=$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/$(curl -s $CONSULURL/v1/kv/$EXAREME_MASTER_PATH/?keys | jq -r '.[]' | sed "s/$EXAREME_MASTER_PATH\///g")?raw)
+            MASTER_IP=${MASTER_key_value_IP}
             MY_IP=$(/sbin/ifconfig | grep "inet " | awk -F: '{print $2}' | grep '10.20' | awk '{print $1;}' | head -n 1)
 
             . ./start-worker.sh
             set_consul
-            echo ${MASTER_IP} > etc/exareme/name
+            echo ${MASTER_IP} > etc/exareme/ip
         fi
         sleep 5
     done
